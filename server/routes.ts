@@ -12,15 +12,19 @@ export async function registerRoutes(
     res.json({ status: "ok" });
   });
 
-  // GET /api/stocks - list all stocks with optional filtering and sorting
+  // GET /api/stocks - list stocks with optional search (returns max 50 results)
   app.get("/api/stocks", async (req, res) => {
     try {
       const parsed = searchQuerySchema.safeParse(req.query);
       const query = parsed.success ? parsed.data : {};
 
-      let stocks = query.q
-        ? await storage.searchStocks(query.q)
-        : await storage.getAllStocks();
+      // If no search query, return empty — use /api/stocks/hot for default view
+      if (!query.q || query.q.trim().length === 0) {
+        res.json([]);
+        return;
+      }
+
+      let stocks = await storage.searchStocks(query.q);
 
       // Filter by industry
       if (query.industry) {
@@ -41,10 +45,56 @@ export async function registerRoutes(
         });
       }
 
-      res.json(stocks);
+      // Limit results to 50 max
+      res.json(stocks.slice(0, 50));
     } catch (err) {
       console.error("Error fetching stocks:", err);
-      res.json([]); // Return empty array instead of 500 while data loads
+      res.json([]);
+    }
+  });
+
+  // GET /api/stocks/hot - get today's hot stocks (top gainers, losers, most active)
+  app.get("/api/stocks/hot", async (_req, res) => {
+    try {
+      const allStocks = await storage.getAllStocks();
+
+      // Top 10 gainers (涨幅榜)
+      const topGainers = [...allStocks]
+        .filter(s => s.changePercent > 0)
+        .sort((a, b) => b.changePercent - a.changePercent)
+        .slice(0, 10);
+
+      // Top 10 losers (跌幅榜)
+      const topLosers = [...allStocks]
+        .filter(s => s.changePercent < 0)
+        .sort((a, b) => a.changePercent - b.changePercent)
+        .slice(0, 10);
+
+      // Top 10 most active by volume (成交量榜)
+      const mostActive = [...allStocks]
+        .sort((a, b) => b.volume - a.volume)
+        .slice(0, 10);
+
+      // Top 10 by turnover rate (换手率榜)
+      const highTurnover = [...allStocks]
+        .sort((a, b) => b.turnoverRate - a.turnoverRate)
+        .slice(0, 10);
+
+      // Top 10 by amplitude (振幅榜)
+      const highAmplitude = [...allStocks]
+        .sort((a, b) => b.amplitude - a.amplitude)
+        .slice(0, 10);
+
+      res.json({
+        topGainers,
+        topLosers,
+        mostActive,
+        highTurnover,
+        highAmplitude,
+      });
+    } catch (err) {
+      console.error("Error fetching hot stocks:", err);
+      res.json({ topGainers: [], topLosers: [], mostActive: [], highTurnover: [], highAmplitude: [] });
     }
   });
 

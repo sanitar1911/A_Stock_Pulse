@@ -578,8 +578,9 @@ function computeRecommendation(
 // ---------------------------------------------------------------------------
 
 export class LiveStorage implements IStorage {
-  // Cache: stock list (60s), kline (5min), per-stock derived data (5min)
-  private stockListCache = new TTLCache<StockQuote[]>(60_000);
+  // Cache: stock list (10min), kline (5min), per-stock derived data (5min)
+  private stockListCache = new TTLCache<StockQuote[]>(600_000);
+  private lastSuccessfulStocks: StockQuote[] | null = null; // persist successful fetch across cache expiry
   private klineCache = new TTLCache<KlineData[]>(300_000);
   private techCache = new TTLCache<TechnicalIndicators>(300_000);
   private fundCache = new TTLCache<Fundamentals>(300_000);
@@ -594,14 +595,21 @@ export class LiveStorage implements IStorage {
       const stocks = await fetchAllStockQuotes();
       if (stocks.length > 0) {
         this.stockListCache.set("all", stocks);
+        this.lastSuccessfulStocks = stocks; // remember successful fetch
         console.log(`[storage] Fetched ${stocks.length} real stocks from East Money API`);
         return stocks;
       }
     } catch (err: any) {
+      // If we previously had real data, reuse it instead of falling back to mock
+      if (this.lastSuccessfulStocks && this.lastSuccessfulStocks.length > 100) {
+        console.warn(`[storage] East Money API unreachable (${err.message}), reusing last successful data (${this.lastSuccessfulStocks.length} stocks)`);
+        this.stockListCache.set("all", this.lastSuccessfulStocks);
+        return this.lastSuccessfulStocks;
+      }
       console.warn(`[storage] East Money API unreachable (${err.message}), using fallback mock data`);
     }
 
-    // Fallback to mock data when API is unreachable (e.g. overseas servers)
+    // Fallback to mock data only on first load when API is unreachable
     const fallback = generateFallbackStocks();
     this.stockListCache.set("all", fallback);
     return fallback;

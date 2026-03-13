@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useTheme } from "@/lib/theme";
 import { formatChange, formatPercent, formatAmount, formatVolume, getChangeColor, getScoreColor } from "@/lib/format";
-import { PerplexityAttribution } from "@/components/PerplexityAttribution";
+
 import type { StockQuote, KlineData, Fundamentals, TechnicalIndicators, SentimentData, InvestmentRecommendation } from "@shared/schema";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -808,7 +808,7 @@ export default function StockDetail() {
           </TabsContent>
         </Tabs>
 
-        <PerplexityAttribution />
+
       </main>
     </div>
   );

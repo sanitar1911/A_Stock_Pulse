@@ -1,31 +1,140 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { Search, TrendingUp, TrendingDown, Minus, Moon, Sun, BarChart3 } from "lucide-react";
+import { Search, TrendingUp, TrendingDown, Flame, ArrowUpDown, Activity, Moon, Sun, BarChart3 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useTheme } from "@/lib/theme";
 import { formatChange, formatPercent, formatVolume, formatAmount, getChangeColor } from "@/lib/format";
-import { PerplexityAttribution } from "@/components/PerplexityAttribution";
+
 import type { StockQuote } from "@shared/schema";
+import { apiRequest } from "@/lib/queryClient";
+
+interface HotStocks {
+  topGainers: StockQuote[];
+  topLosers: StockQuote[];
+  mostActive: StockQuote[];
+  highTurnover: StockQuote[];
+  highAmplitude: StockQuote[];
+}
+
+function useDebounce(fn: (val: string) => void, delay: number) {
+  const timerRef = useState<ReturnType<typeof setTimeout> | null>(null);
+  return useCallback((val: string) => {
+    if (timerRef[0]) clearTimeout(timerRef[0]);
+    const t = setTimeout(() => fn(val), delay);
+    timerRef[1](t);
+  }, [fn, delay]);
+}
+
+/** A compact stock row used in both search results and hot lists */
+function StockRow({ stock, showExtra }: { stock: StockQuote; showExtra?: "volume" | "turnover" | "amplitude" }) {
+  return (
+    <Link href={`/stock/${stock.code}`}>
+      <div
+        className="grid grid-cols-[1fr_auto] md:grid-cols-[1fr_90px_90px_90px_100px] gap-2 px-4 py-3 border-b border-border last:border-b-0 hover:bg-muted/30 transition-colors cursor-pointer items-center"
+        data-testid={`row-stock-${stock.code}`}
+      >
+        {/* Name & Code */}
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center justify-center w-8 h-8 rounded bg-primary/10 text-primary shrink-0">
+            <BarChart3 className="h-4 w-4" />
+          </div>
+          <div className="min-w-0">
+            <p className="font-medium text-sm truncate">{stock.name}</p>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground tabular-nums">{stock.market}{stock.code}</span>
+              <Badge variant="secondary" className="text-[10px] px-1 py-0">{stock.industry}</Badge>
+            </div>
+          </div>
+        </div>
+        {/* Mobile: Price & Change */}
+        <div className="md:hidden text-right">
+          <p className={`font-medium tabular-nums ${getChangeColor(stock.changePercent)}`}>
+            {stock.price.toFixed(2)}
+          </p>
+          <p className={`text-xs tabular-nums ${getChangeColor(stock.changePercent)}`}>
+            {formatPercent(stock.changePercent)}
+          </p>
+        </div>
+        {/* Desktop columns */}
+        <p className={`hidden md:block text-right font-medium tabular-nums text-sm ${getChangeColor(stock.changePercent)}`}>
+          {stock.price.toFixed(2)}
+        </p>
+        <p className={`hidden md:block text-right tabular-nums text-sm ${getChangeColor(stock.changePercent)}`}>
+          {formatPercent(stock.changePercent)}
+        </p>
+        <p className={`hidden md:block text-right tabular-nums text-sm ${getChangeColor(stock.change)}`}>
+          {formatChange(stock.change)}
+        </p>
+        <p className="hidden md:block text-right text-sm tabular-nums text-muted-foreground">
+          {showExtra === "turnover"
+            ? `${stock.turnoverRate.toFixed(2)}%`
+            : showExtra === "amplitude"
+            ? `${stock.amplitude.toFixed(2)}%`
+            : formatVolume(stock.volume)}
+        </p>
+      </div>
+    </Link>
+  );
+}
+
+function StockTable({ stocks, extraLabel, extraField }: {
+  stocks: StockQuote[];
+  extraLabel?: string;
+  extraField?: "volume" | "turnover" | "amplitude";
+}) {
+  return (
+    <div className="border border-border rounded-lg overflow-hidden">
+      <div className="hidden md:grid grid-cols-[1fr_90px_90px_90px_100px] gap-2 px-4 py-2.5 bg-muted/50 text-xs font-medium text-muted-foreground border-b border-border">
+        <span>股票</span>
+        <span className="text-right">最新价</span>
+        <span className="text-right">涨跌幅</span>
+        <span className="text-right">涨跌额</span>
+        <span className="text-right">{extraLabel || "成交量"}</span>
+      </div>
+      {stocks.map((stock) => (
+        <StockRow key={stock.code} stock={stock} showExtra={extraField} />
+      ))}
+      {stocks.length === 0 && (
+        <div className="p-8 text-center text-muted-foreground text-sm">暂无数据</div>
+      )}
+    </div>
+  );
+}
 
 export default function Home() {
-  const [search, setSearch] = useState("");
-  const [industry, setIndustry] = useState("all");
-  const [sortBy, setSortBy] = useState("default");
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const { theme, toggleTheme } = useTheme();
 
-  const { data: stocks, isLoading } = useQuery<StockQuote[]>({
-    queryKey: ["/api/stocks"],
-    refetchInterval: 30000,
+  const debouncedSetQuery = useDebounce(setSearchQuery, 300);
+
+  const handleSearchChange = (val: string) => {
+    setSearchInput(val);
+    debouncedSetQuery(val);
+  };
+
+  // Fetch hot stocks for default view
+  const { data: hotStocks, isLoading: hotLoading } = useQuery<HotStocks>({
+    queryKey: ["/api/stocks/hot"],
+    refetchInterval: 60000, // refresh every minute
   });
 
-  const { data: industries } = useQuery<string[]>({
-    queryKey: ["/api/industries"],
+  // Fetch search results only when user types
+  const { data: searchResults, isLoading: searchLoading } = useQuery<StockQuote[]>({
+    queryKey: ["/api/stocks/search", searchQuery],
+    queryFn: async () => {
+      if (!searchQuery.trim()) return [];
+      const res = await apiRequest("GET", `/api/stocks?q=${encodeURIComponent(searchQuery)}`);
+      return res.json();
+    },
+    enabled: searchQuery.trim().length > 0,
+    staleTime: 30000, // search results stale after 30s
   });
 
   const { data: overview } = useQuery<{
@@ -36,25 +145,10 @@ export default function Home() {
     avgChange: number;
   }>({
     queryKey: ["/api/market/overview"],
+    refetchInterval: 60000,
   });
 
-  const filtered = stocks
-    ?.filter((s) => {
-      const q = search.toLowerCase();
-      if (q && !s.code.includes(q) && !s.name.toLowerCase().includes(q)) return false;
-      if (industry !== "all" && s.industry !== industry) return false;
-      return true;
-    })
-    .sort((a, b) => {
-      switch (sortBy) {
-        case "change_desc": return b.changePercent - a.changePercent;
-        case "change_asc": return a.changePercent - b.changePercent;
-        case "volume": return b.volume - a.volume;
-        case "marketCap": return b.marketCap - a.marketCap;
-        case "pe": return a.pe - b.pe;
-        default: return 0;
-      }
-    });
+  const isSearching = searchQuery.trim().length > 0;
 
   return (
     <div className="min-h-screen bg-background">
@@ -85,153 +179,145 @@ export default function Home() {
       <main className="max-w-[1400px] mx-auto px-4 py-6 space-y-6">
         {/* Market Overview */}
         {overview && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <Card className="p-4">
               <p className="text-xs text-muted-foreground mb-1">全部股票</p>
-              <p className="text-xl font-semibold tabular-nums" data-testid="text-total">{overview.totalStocks}</p>
+              <p className="text-lg font-semibold tabular-nums" data-testid="text-total">{overview.totalStocks}</p>
             </Card>
             <Card className="p-4">
               <p className="text-xs text-muted-foreground mb-1">上涨 / 平 / 下跌</p>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-xl font-semibold tabular-nums text-stock-up" data-testid="text-up">{overview.upCount}</span>
-                <span className="text-sm text-stock-flat">/</span>
-                <span className="text-xl font-semibold tabular-nums text-stock-flat">{overview.flatCount}</span>
-                <span className="text-sm text-stock-flat">/</span>
-                <span className="text-xl font-semibold tabular-nums text-stock-down" data-testid="text-down">{overview.downCount}</span>
+              <div className="flex items-baseline gap-1 flex-wrap">
+                <span className="text-lg font-semibold tabular-nums text-stock-up" data-testid="text-up">{overview.upCount}</span>
+                <span className="text-xs text-muted-foreground">/</span>
+                <span className="text-lg font-semibold tabular-nums text-stock-flat">{overview.flatCount}</span>
+                <span className="text-xs text-muted-foreground">/</span>
+                <span className="text-lg font-semibold tabular-nums text-stock-down" data-testid="text-down">{overview.downCount}</span>
               </div>
             </Card>
             <Card className="p-4">
               <p className="text-xs text-muted-foreground mb-1">平均涨跌</p>
-              <p className={`text-xl font-semibold tabular-nums ${getChangeColor(overview.avgChange)}`} data-testid="text-avg">
+              <p className={`text-lg font-semibold tabular-nums ${getChangeColor(overview.avgChange)}`} data-testid="text-avg">
                 {formatPercent(overview.avgChange)}
               </p>
             </Card>
           </div>
         )}
 
-        {/* Search & Filters */}
-        <div className="flex flex-col sm:flex-row gap-3">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              type="search"
-              placeholder="搜索股票代码或名称..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-9"
-              data-testid="input-search"
-            />
-          </div>
-          <Select value={industry} onValueChange={setIndustry}>
-            <SelectTrigger className="w-full sm:w-[140px]" data-testid="select-industry">
-              <SelectValue placeholder="行业筛选" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部行业</SelectItem>
-              {industries?.map((ind) => (
-                <SelectItem key={ind} value={ind}>{ind}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={sortBy} onValueChange={setSortBy}>
-            <SelectTrigger className="w-full sm:w-[140px]" data-testid="select-sort">
-              <SelectValue placeholder="排序方式" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="default">默认排序</SelectItem>
-              <SelectItem value="change_desc">涨幅排序</SelectItem>
-              <SelectItem value="change_asc">跌幅排序</SelectItem>
-              <SelectItem value="volume">成交量排序</SelectItem>
-              <SelectItem value="marketCap">市值排序</SelectItem>
-              <SelectItem value="pe">市盈率排序</SelectItem>
-            </SelectContent>
-          </Select>
+        {/* Search Bar */}
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            type="search"
+            placeholder="输入股票代码或名称搜索（如：000001、平安银行）..."
+            value={searchInput}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            className="pl-9 h-11 text-base"
+            data-testid="input-search"
+          />
         </div>
 
-        {/* Stock List */}
-        {isLoading ? (
-          <div className="space-y-2">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <Skeleton key={i} className="h-16 w-full rounded-lg" />
-            ))}
-          </div>
-        ) : (
-          <div className="border border-border rounded-lg overflow-hidden">
-            {/* Table Header */}
-            <div className="hidden md:grid grid-cols-[1fr_100px_100px_100px_100px_100px_80px_80px] gap-2 px-4 py-2.5 bg-muted/50 text-xs font-medium text-muted-foreground border-b border-border">
-              <span>股票</span>
-              <span className="text-right">最新价</span>
-              <span className="text-right">涨跌幅</span>
-              <span className="text-right">涨跌额</span>
-              <span className="text-right">成交量</span>
-              <span className="text-right">市值(亿)</span>
-              <span className="text-right">PE</span>
-              <span className="text-right">PB</span>
+        {/* Search Results */}
+        {isSearching ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Search className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-sm font-medium text-muted-foreground">
+                搜索结果："{searchQuery}"
+              </h2>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs ml-auto"
+                onClick={() => { setSearchInput(""); setSearchQuery(""); }}
+              >
+                清除搜索
+              </Button>
             </div>
-            {/* Stock Rows */}
-            {filtered?.map((stock) => (
-              <Link key={stock.code} href={`/stock/${stock.code}`}>
-                <div
-                  className="grid grid-cols-[1fr_auto] md:grid-cols-[1fr_100px_100px_100px_100px_100px_80px_80px] gap-2 px-4 py-3 border-b border-border last:border-b-0 hover:bg-muted/30 transition-colors cursor-pointer items-center"
-                  data-testid={`row-stock-${stock.code}`}
-                >
-                  {/* Name & Code */}
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="flex items-center justify-center w-8 h-8 rounded bg-primary/10 text-primary shrink-0">
-                      <BarChart3 className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="font-medium text-sm truncate">{stock.name}</p>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs text-muted-foreground tabular-nums">{stock.market}{stock.code}</span>
-                        <Badge variant="secondary" className="text-[10px] px-1 py-0">{stock.industry}</Badge>
-                      </div>
-                    </div>
-                  </div>
-                  {/* Mobile: Price & Change */}
-                  <div className="md:hidden text-right">
-                    <p className={`font-medium tabular-nums ${getChangeColor(stock.changePercent)}`}>
-                      {stock.price.toFixed(2)}
-                    </p>
-                    <p className={`text-xs tabular-nums ${getChangeColor(stock.changePercent)}`}>
-                      {formatPercent(stock.changePercent)}
-                    </p>
-                  </div>
-                  {/* Desktop columns */}
-                  <p className={`hidden md:block text-right font-medium tabular-nums text-sm ${getChangeColor(stock.changePercent)}`}>
-                    {stock.price.toFixed(2)}
-                  </p>
-                  <p className={`hidden md:block text-right tabular-nums text-sm ${getChangeColor(stock.changePercent)}`}>
-                    {formatPercent(stock.changePercent)}
-                  </p>
-                  <p className={`hidden md:block text-right tabular-nums text-sm ${getChangeColor(stock.change)}`}>
-                    {formatChange(stock.change)}
-                  </p>
-                  <p className="hidden md:block text-right text-sm tabular-nums text-muted-foreground">
-                    {formatVolume(stock.volume)}
-                  </p>
-                  <p className="hidden md:block text-right text-sm tabular-nums text-muted-foreground">
-                    {formatAmount(stock.marketCap)}
-                  </p>
-                  <p className="hidden md:block text-right text-sm tabular-nums text-muted-foreground">
-                    {stock.pe.toFixed(1)}
-                  </p>
-                  <p className="hidden md:block text-right text-sm tabular-nums text-muted-foreground">
-                    {stock.pb.toFixed(2)}
-                  </p>
+            {searchLoading ? (
+              <div className="space-y-2">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Skeleton key={i} className="h-16 w-full rounded-lg" />
+                ))}
+              </div>
+            ) : (
+              <div className="border border-border rounded-lg overflow-hidden">
+                <div className="hidden md:grid grid-cols-[1fr_90px_90px_90px_100px] gap-2 px-4 py-2.5 bg-muted/50 text-xs font-medium text-muted-foreground border-b border-border">
+                  <span>股票</span>
+                  <span className="text-right">最新价</span>
+                  <span className="text-right">涨跌幅</span>
+                  <span className="text-right">涨跌额</span>
+                  <span className="text-right">成交量</span>
                 </div>
-              </Link>
-            ))}
-            {filtered?.length === 0 && (
-              <div className="p-12 text-center text-muted-foreground">
-                <Search className="h-8 w-8 mx-auto mb-3 opacity-40" />
-                <p className="text-sm">未找到匹配的股票</p>
+                {searchResults?.map((stock) => (
+                  <StockRow key={stock.code} stock={stock} />
+                ))}
+                {searchResults?.length === 0 && (
+                  <div className="p-12 text-center text-muted-foreground">
+                    <Search className="h-8 w-8 mx-auto mb-3 opacity-40" />
+                    <p className="text-sm">未找到匹配的股票</p>
+                  </div>
+                )}
               </div>
             )}
           </div>
-        )}
+        ) : (
+          /* Hot Stocks - Default View */
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <Flame className="h-5 w-5 text-orange-500" />
+              <h2 className="text-base font-semibold">今日热门</h2>
+            </div>
 
-        <PerplexityAttribution />
+            {hotLoading ? (
+              <div className="space-y-2">
+                {Array.from({ length: 8 }).map((_, i) => (
+                  <Skeleton key={i} className="h-16 w-full rounded-lg" />
+                ))}
+              </div>
+            ) : (
+              <Tabs defaultValue="gainers" className="w-full">
+                <TabsList className="w-full flex overflow-x-auto">
+                  <TabsTrigger value="gainers" className="flex items-center gap-1.5 flex-1">
+                    <TrendingUp className="h-3.5 w-3.5" />
+                    涨幅榜
+                  </TabsTrigger>
+                  <TabsTrigger value="losers" className="flex items-center gap-1.5 flex-1">
+                    <TrendingDown className="h-3.5 w-3.5" />
+                    跌幅榜
+                  </TabsTrigger>
+                  <TabsTrigger value="active" className="flex items-center gap-1.5 flex-1">
+                    <Activity className="h-3.5 w-3.5" />
+                    成交量榜
+                  </TabsTrigger>
+                  <TabsTrigger value="turnover" className="flex items-center gap-1.5 flex-1">
+                    <ArrowUpDown className="h-3.5 w-3.5" />
+                    换手率榜
+                  </TabsTrigger>
+                  <TabsTrigger value="amplitude" className="flex items-center gap-1.5 flex-1">
+                    <Flame className="h-3.5 w-3.5" />
+                    振幅榜
+                  </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="gainers" className="mt-4">
+                  <StockTable stocks={hotStocks?.topGainers || []} />
+                </TabsContent>
+                <TabsContent value="losers" className="mt-4">
+                  <StockTable stocks={hotStocks?.topLosers || []} />
+                </TabsContent>
+                <TabsContent value="active" className="mt-4">
+                  <StockTable stocks={hotStocks?.mostActive || []} extraLabel="成交量" extraField="volume" />
+                </TabsContent>
+                <TabsContent value="turnover" className="mt-4">
+                  <StockTable stocks={hotStocks?.highTurnover || []} extraLabel="换手率" extraField="turnover" />
+                </TabsContent>
+                <TabsContent value="amplitude" className="mt-4">
+                  <StockTable stocks={hotStocks?.highAmplitude || []} extraLabel="振幅" extraField="amplitude" />
+                </TabsContent>
+              </Tabs>
+            )}
+          </div>
+        )}
       </main>
     </div>
   );
