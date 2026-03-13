@@ -101,9 +101,9 @@ const KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get";
 
 let apiReachable: boolean | null = null; // null = unknown, true/false after first attempt
 
-async function fetchJson(url: string): Promise<any> {
+async function fetchJson(url: string, timeoutMs: number = 30000): Promise<any> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, {
       headers: {
@@ -121,6 +121,11 @@ async function fetchJson(url: string): Promise<any> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Sleep helper */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Parse a single item from the East Money clist diff array into a StockQuote. */
@@ -842,9 +847,48 @@ function generateFallbackKlines(basePrice: number, code: string): KlineData[] {
 
 const liveStorage = new LiveStorage();
 
-// Pre-warm the cache on startup (non-blocking)
-liveStorage.getAllStocks().catch((err) => {
-  console.error("Initial stock data fetch failed (will retry on next request):", err.message);
-});
+// Pre-warm cache on startup with retry logic to avoid falling back to 50 mock stocks
+(async () => {
+  const MAX_RETRIES = 3;
+  const RETRY_DELAYS = [0, 5000, 10000]; // 0s, 5s, 10s
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      console.log(`[startup] Retry attempt ${attempt + 1}/${MAX_RETRIES} in ${RETRY_DELAYS[attempt] / 1000}s...`);
+      await sleep(RETRY_DELAYS[attempt]);
+    }
+    try {
+      const stocks = await fetchAllStockQuotes();
+      if (stocks.length > 100) {
+        liveStorage["stockListCache"].set("all", stocks);
+        liveStorage["lastSuccessfulStocks"] = stocks;
+        console.log(`[startup] Successfully loaded ${stocks.length} real stocks (attempt ${attempt + 1})`);
+        return; // success — exit
+      }
+      console.warn(`[startup] Got only ${stocks.length} stocks, retrying...`);
+    } catch (err: any) {
+      console.warn(`[startup] Attempt ${attempt + 1} failed: ${err.message}`);
+    }
+  }
+
+  // All retries failed — load mock data, then schedule background recovery
+  console.warn(`[startup] All ${MAX_RETRIES} attempts failed. Loading fallback data and scheduling background recovery.`);
+
+  // Schedule a background retry every 60s until real data is loaded
+  const recoveryInterval = setInterval(async () => {
+    try {
+      console.log("[recovery] Attempting to fetch real stock data in background...");
+      const stocks = await fetchAllStockQuotes();
+      if (stocks.length > 100) {
+        liveStorage["stockListCache"].set("all", stocks);
+        liveStorage["lastSuccessfulStocks"] = stocks;
+        console.log(`[recovery] Successfully recovered! Loaded ${stocks.length} real stocks.`);
+        clearInterval(recoveryInterval);
+      }
+    } catch (err: any) {
+      console.warn(`[recovery] Background fetch failed: ${err.message}`);
+    }
+  }, 60_000);
+})();
 
 export const storage: IStorage = liveStorage;
